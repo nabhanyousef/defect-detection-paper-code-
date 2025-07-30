@@ -1,0 +1,75 @@
+import cv2
+import numpy as np
+import os
+from pathlib import Path
+
+# --- CONFIGURATION ---
+clip_limit = 2.0
+tile_grid_size = (8, 8)
+denoise_h = 10
+template_window = 7
+search_window = 21
+angle_deg = 15
+scale_range = (0.9, 1.1)
+light_dir = (1, -1)
+input_dir = "/path/to/your/dataset"  
+output_dir = "/path/to/save/augmented_images"
+
+# --- Ensure Output Directory Exists ---
+os.makedirs(output_dir, exist_ok=True)
+
+# --- Define Functions ---
+def clahe_normalization(img):
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    return clahe.apply(img)
+
+def denoise_nlm(img):
+    return cv2.fastNlMeansDenoising(img, h=denoise_h,
+                                     templateWindowSize=template_window,
+                                     searchWindowSize=search_window)
+
+def apply_affine_and_phong(img, angle_deg=15, scale_range=(0.9, 1.1), light_dir=(1, -1)):
+    h, w = img.shape
+    center = (w // 2, h // 2)
+    angle = np.random.uniform(-angle_deg, angle_deg)
+    scale = np.random.uniform(*scale_range)
+    M = cv2.getRotationMatrix2D(center, angle, scale)
+    affine_img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    normalized = affine_img.astype(np.float32) / 255.0
+    gradient_x = cv2.Sobel(normalized, cv2.CV_32F, 1, 0, ksize=5)
+    gradient_y = cv2.Sobel(normalized, cv2.CV_32F, 0, 1, ksize=5)
+    normal_map = np.dstack((-gradient_x, -gradient_y, np.ones_like(normalized)))
+    norm = np.linalg.norm(normal_map, axis=2, keepdims=True)
+    normal_map /= np.clip(norm, 1e-6, None)
+
+    light = np.array(light_dir + (1,))
+    light = light / np.linalg.norm(light)
+    dot = np.clip(np.sum(normal_map * light, axis=2), 0, 1)
+    specular = (dot ** 20) * 0.5
+    phong_img = np.clip(affine_img / 255.0 + specular, 0, 1)
+    phong_img = (phong_img * 255).astype(np.uint8)
+
+    return affine_img, phong_img
+
+# --- Process All Images ---
+for file_path in Path(input_dir).glob("*.jpg"):
+    filename = file_path.name
+    img = cv2.imread(str(file_path), cv2.IMREAD_GRAYSCALE)
+
+    # Step 1: CLAHE
+    img_clahe = clahe_normalization(img)
+
+    # Step 2: Denoise
+    img_denoised = denoise_nlm(img_clahe)
+
+    # Step 3: Affine + Phong Augmentation
+    img_affine, img_phong = apply_affine_and_phong(img_denoised)
+
+    # Save outputs
+    cv2.imwrite(os.path.join(output_dir, f"{filename}_clahe.jpg"), img_clahe)
+    cv2.imwrite(os.path.join(output_dir, f"{filename}_denoised.jpg"), img_denoised)
+    cv2.imwrite(os.path.join(output_dir, f"{filename}_affine.jpg"), img_affine)
+    cv2.imwrite(os.path.join(output_dir, f"{filename}_phong.jpg"), img_phong)
+
+
